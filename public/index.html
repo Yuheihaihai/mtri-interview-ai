@@ -268,6 +268,15 @@
     }
     .btn-danger:hover { background: rgba(248, 113, 113, 0.25); }
 
+    .btn-terminate {
+      background: var(--red);
+      color: white;
+      border: 1px solid var(--red);
+      font-weight: 600;
+    }
+    .btn-terminate:hover { filter: brightness(1.15); }
+    .btn-terminate:active { transform: scale(0.97); }
+
     .btn-icon {
       width: 40px; height: 40px;
       padding: 0;
@@ -611,6 +620,7 @@
         <button class="btn btn-secondary" id="skipBtn"><span class="btn-label">Skip </span>Section</button>
         <button class="btn btn-secondary" id="feedbackBtn">Feedback?</button>
         <button class="btn btn-danger" id="endBtn">End</button>
+        <button class="btn btn-terminate" id="terminateBtn" title="Terminate session and disconnect">Terminate</button>
       </div>
 
       <!-- TRANSCRIPT -->
@@ -1116,6 +1126,63 @@ $("endBtn").addEventListener("click", () => {
     if (timerInterval) clearInterval(timerInterval);
   }
 });
+
+$("terminateBtn").addEventListener("click", () => {
+  if (confirm("Terminate the session? This will disconnect immediately without a scorecard.")) {
+    terminateSession();
+  }
+});
+
+function terminateSession() {
+  // Stop timer
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+
+  // Close data channel
+  if (dc) { try { dc.close(); } catch(e) {} dc = null; }
+
+  // Close peer connection
+  if (pc) { try { pc.close(); } catch(e) {} pc = null; }
+
+  // Stop all media tracks
+  if (mediaStream) {
+    mediaStream.getTracks().forEach(t => t.stop());
+    mediaStream = null;
+  }
+
+  // Reset video
+  $("localVideo").srcObject = null;
+
+  // Reset state
+  sessionSeconds = 0;
+  isMuted = false;
+  cameraOn = true;
+  audioTranscriptBuffer = "";
+  textResponseBuffer = "";
+  lastAIMsgEl = null;
+  notesFirstCleared = false;
+  noteCount = 0;
+  currentState = "SETUP";
+
+  // Reset UI
+  $("timer").textContent = "00:00";
+  $("stateBadge").textContent = "SETUP";
+  $("transcript").innerHTML = '<div class="msg placeholder-msg" style="color: var(--text-dim); font-style: italic;">Session will begin when you click Start...</div>';
+  $("notesList").innerHTML = '<div style="color: var(--text-dim); font-size: 13px; padding: 20px; text-align: center;">Notes will appear here after each answer.</div>';
+  $("notesBadge").style.display = "none";
+  $("notesBadge").textContent = "0";
+  $("muteBtn").style.background = "";
+  $("muteBtn").style.borderColor = "";
+  $("cameraBtn").style.background = "";
+  $("cameraBtn").style.borderColor = "";
+  $("visualizerBar").classList.remove("active");
+  setStatus("", "Ready");
+
+  // Reset mobile view
+  switchMobileView("interview");
+
+  // Show start screen
+  $("startScreen").classList.remove("hidden");
+}
 
 // ─── CLEANUP ───
 window.addEventListener("beforeunload", () => {
