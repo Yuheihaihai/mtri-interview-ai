@@ -2,6 +2,11 @@ import express from "express";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { readFileSync } from "fs";
+import multer from "multer";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse/lib/pdf-parse.js");
+import mammoth from "mammoth";
 
 // Load .env manually (no dotenv ESM issues)
 try {
@@ -20,6 +25,55 @@ const PORT = process.env.PORT || 3000;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 app.use(express.static(join(__dirname, "public")));
+
+// Multer: in-memory storage, 5MB limit, accept PDF/DOCX/TXT
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "text/plain",
+    ];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Only PDF, DOCX, or TXT files are accepted."));
+  },
+});
+
+// ─── Resume upload endpoint ───
+app.post("/api/parse-resume", upload.single("resume"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded." });
+  }
+
+  try {
+    let text = "";
+    const mime = req.file.mimetype;
+
+    if (mime === "application/pdf") {
+      const data = await pdfParse(req.file.buffer);
+      text = data.text;
+    } else if (mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+      const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+      text = result.value;
+    } else {
+      text = req.file.buffer.toString("utf-8");
+    }
+
+    // Trim and limit to 8000 chars to stay within context limits
+    text = text.replace(/\s+/g, " ").trim().slice(0, 8000);
+
+    if (!text) {
+      return res.status(400).json({ error: "Could not extract text from the file." });
+    }
+
+    res.json({ text });
+  } catch (err) {
+    console.error("Resume parse error:", err);
+    res.status(500).json({ error: "Failed to parse resume: " + err.message });
+  }
+});
 
 // Rate limiting for session creation
 const sessionRateLimit = new Map();
