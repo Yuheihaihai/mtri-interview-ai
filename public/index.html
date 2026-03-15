@@ -277,6 +277,14 @@
     .btn-terminate:hover { filter: brightness(1.15); }
     .btn-terminate:active { transform: scale(0.97); }
 
+    .btn-pdf {
+      background: rgba(108, 99, 255, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(108, 99, 255, 0.4);
+    }
+    .btn-pdf:hover { background: rgba(108, 99, 255, 0.3); }
+    .btn-pdf:active { transform: scale(0.97); }
+
     .btn-icon {
       width: 40px; height: 40px;
       padding: 0;
@@ -703,6 +711,10 @@
         <button class="btn btn-secondary" id="feedbackBtn">Feedback?</button>
         <button class="btn btn-danger" id="endBtn">End</button>
         <button class="btn btn-terminate" id="terminateBtn" title="Terminate session and disconnect">Terminate</button>
+        <button class="btn btn-pdf" id="saveNotesBtn" style="display:none" title="Download session report as PDF">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span class="btn-label">Save </span>PDF
+        </button>
       </div>
 
       <!-- TRANSCRIPT -->
@@ -735,7 +747,13 @@
     <h2>Session Scorecard</h2>
     <pre id="scorecardContent"></pre>
     <br>
-    <button class="btn btn-primary" style="width:100%" onclick="document.getElementById('scorecardModal').classList.remove('active')">Close</button>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-primary" style="flex:1" id="downloadPdfBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download Full Report (PDF)
+      </button>
+      <button class="btn btn-secondary" style="flex:0 0 auto" onclick="document.getElementById('scorecardModal').classList.remove('active')">Close</button>
+    </div>
   </div>
 </div>
 
@@ -753,6 +771,10 @@ let notesFirstCleared = false;
 let noteCount = 0;
 let currentMobileView = "interview"; // "interview" | "transcript" | "notes"
 let resumeText = ""; // parsed resume content
+let sessionTranscript = []; // {role: "ai"|"user", text: string}
+let rawCoachNotes = []; // raw text of each coach note
+let rawScorecard = ""; // raw text of final scorecard
+let sessionEnded = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -1098,9 +1120,13 @@ function handleTextResponse(text) {
 
   if (isCoachNote) {
     if (text.includes("SCORECARD") || text.includes("SESSION SCORECARD") || text.includes("OVERALL")) {
+      rawScorecard = text;
       $("scorecardContent").textContent = text;
       $("scorecardModal").classList.add("active");
+      // Show PDF button in controls
+      $("saveNotesBtn").style.display = "";
     }
+    rawCoachNotes.push(text);
     addCoachNote(text);
 
     // Update mobile badge if not on notes tab
@@ -1155,8 +1181,10 @@ function finalizeAIMessage(text) {
     lastAIMsgEl.textContent = text;
   } else {
     addTranscriptMessage("ai", text);
+    return; // addTranscriptMessage already pushes to sessionTranscript
   }
   lastAIMsgEl = null;
+  sessionTranscript.push({ role: "ai", text });
 }
 
 function addTranscriptMessage(role, text) {
@@ -1168,6 +1196,7 @@ function addTranscriptMessage(role, text) {
   div.textContent = text;
   $("transcript").appendChild(div);
   $("transcript").scrollTop = $("transcript").scrollHeight;
+  sessionTranscript.push({ role, text });
 }
 
 function addCoachNote(text) {
@@ -1272,6 +1301,7 @@ $("feedbackBtn").addEventListener("click", () => {
 
 $("endBtn").addEventListener("click", () => {
   if (confirm("End the interview session? You'll receive your final scorecard.")) {
+    sessionEnded = true;
     sendEvent({
       type: "response.create",
       response: {
@@ -1281,6 +1311,8 @@ $("endBtn").addEventListener("click", () => {
     });
 
     if (timerInterval) clearInterval(timerInterval);
+    // Show PDF button immediately so user can download even before scorecard arrives
+    $("saveNotesBtn").style.display = "";
   }
 });
 
@@ -1319,6 +1351,10 @@ function terminateSession() {
   notesFirstCleared = false;
   noteCount = 0;
   currentState = "SETUP";
+  sessionTranscript = [];
+  rawCoachNotes = [];
+  rawScorecard = "";
+  sessionEnded = false;
 
   // Reset resume state
   resumeText = "";
@@ -1341,6 +1377,7 @@ function terminateSession() {
   $("cameraBtn").style.background = "";
   $("cameraBtn").style.borderColor = "";
   $("visualizerBar").classList.remove("active");
+  $("saveNotesBtn").style.display = "none";
   setStatus("", "Ready");
 
   // Reset mobile view
@@ -1349,6 +1386,56 @@ function terminateSession() {
   // Show start screen
   $("startScreen").classList.remove("hidden");
 }
+
+// ─── PDF DOWNLOAD ───
+async function downloadSessionPDF() {
+  const btn = event.target.closest("button") || event.target;
+  const origText = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = "Generating PDF...";
+
+  try {
+    const duration = $("timer").textContent;
+    const today = new Date().toISOString().split("T")[0];
+
+    const res = await fetch("/api/generate-pdf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transcript: sessionTranscript,
+        coachNotes: rawCoachNotes,
+        scorecard: rawScorecard,
+        duration: duration,
+        date: today,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "PDF generation failed");
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `MTRI-Interview-Report-${today}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    btn.innerHTML = origText;
+    btn.disabled = false;
+  } catch (err) {
+    alert("Failed to generate PDF: " + err.message);
+    btn.innerHTML = origText;
+    btn.disabled = false;
+  }
+}
+
+$("downloadPdfBtn").addEventListener("click", downloadSessionPDF);
+$("saveNotesBtn").addEventListener("click", downloadSessionPDF);
 
 // ─── CLEANUP ───
 window.addEventListener("beforeunload", () => {
